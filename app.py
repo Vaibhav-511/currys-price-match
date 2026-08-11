@@ -3,22 +3,24 @@ import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
+# Page Configuration
 st.set_page_config(
     page_title="Currys Price Match", page_icon="⚡", layout="centered"
 )
 
+# Header UI
 st.markdown(
     "⚡ Currys Price Match",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "Exact Irish Competitor Price Scanner",
+    "Smart Irish Competitor Price Scanner",
     unsafe_allow_html=True,
 )
 
 query = st.text_input(
     "Product Search",
-    placeholder="Enter EAN code, exact model number, or product name...",
+    placeholder="Type EAN barcode, model number, or product name...",
 )
 
 RETAILERS = {
@@ -31,6 +33,24 @@ RETAILERS = {
 }
 
 SERPAPI_KEY = "PASTE_YOUR_SERPAPI_KEY_HERE"
+
+
+def resolve_barcode_to_title(barcode, api_key):
+    """Converts a raw 12/13-digit EAN barcode into a full product title."""
+    url = f"https://serpapi.com/search.json?q={barcode}&engine=google&gl=ie&hl=en&api_key={api_key}"
+    try:
+        res = requests.get(url, timeout=5).json()
+        organic = res.get("organic_results", [])
+        if organic:
+            raw_title = organic[0].get("title", "")
+            # Remove generic store tags like "| Currys" or "- Amazon"
+            clean_title = (
+                raw_title.split("|")[0].split("-")[0].split(":")[0].strip()
+            )
+            return clean_title
+    except Exception:
+        pass
+    return barcode
 
 
 def parse_snippet_price(result):
@@ -89,22 +109,27 @@ if (
     st.button("🔍 Search Competitors", use_container_width=True, type="primary")
     and query
 ):
-    st.markdown("---")
-    st.markdown(f"#### Results for: **'{query}'**")
-
-    # Clean raw input
     clean_query = query.strip()
-    is_numeric = clean_query.isdigit()
+    search_term = clean_query
 
-    with st.spinner("Finding exact matching product and prices..."):
+    # Step 1: If input is a numeric barcode, convert it to product title
+    if clean_query.isdigit():
+        with st.spinner("Converting barcode to product name..."):
+            resolved_name = resolve_barcode_to_title(
+                clean_query, SERPAPI_KEY
+            )
+            if resolved_name != clean_query:
+                st.info(f"📦 Barcode Identifed: **{resolved_name}**")
+                search_term = resolved_name
+
+    st.markdown("---")
+    st.markdown(f"#### Results for: **'{search_term}'**")
+
+    # Step 2: Search competitor websites using the exact product name
+    with st.spinner("Searching competitor live prices..."):
         for name, domain in RETAILERS.items():
             with st.container(border=True):
                 col1, col2 = st.columns([2.5, 1.2])
-
-                # Use quote marks on EAN codes to force exact match search
-                search_term = (
-                    f'"{clean_query}"' if is_numeric else clean_query
-                )
 
                 params = {
                     "q": f"site:{domain} {search_term}",
@@ -119,21 +144,6 @@ if (
                         "https://serpapi.com/search.json", params=params
                     ).json()
                     organic = res.get("organic_results", [])
-
-                    # Fallback to broader search if quotes were too strict
-                    if not organic and is_numeric:
-                        fallback_params = {
-                            "q": f"site:{domain} {clean_query}",
-                            "engine": "google",
-                            "gl": "ie",
-                            "hl": "en",
-                            "api_key": SERPAPI_KEY,
-                        }
-                        res = requests.get(
-                            "https://serpapi.com/search.json",
-                            params=fallback_params,
-                        ).json()
-                        organic = res.get("organic_results", [])
 
                     if organic:
                         top_match = organic[0]
@@ -162,7 +172,7 @@ if (
                     else:
                         with col1:
                             st.markdown(f"### {name}")
-                            st.caption("No exact match found.")
+                            st.caption("No matching product found.")
                         with col2:
                             st.metric(label="Live Price", value="-")
                             st.error("Unavailable")
