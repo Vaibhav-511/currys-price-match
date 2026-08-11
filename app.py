@@ -1,5 +1,6 @@
 import re
 import requests
+from bs4 import BeautifulSoup
 import streamlit as st
 
 # Page Configuration
@@ -7,13 +8,12 @@ st.set_page_config(
     page_title="Currys Price Match", page_icon="⚡", layout="centered"
 )
 
-# Header UI
 st.markdown(
-    "⚡ Currys Price Match",
+    "<h1 style='text-align: center; color: #4F46E5;'>⚡ Currys Price Match</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "Live Irish Competitor Price Scanner",
+    "<p style='text-align: center; color: #6B7280; font-size: 0.95rem; margin-bottom: 25px;'>Live Irish Competitor Price Scanner</p>",
     unsafe_allow_html=True,
 )
 
@@ -22,7 +22,6 @@ query = st.text_input(
     placeholder="Type EAN code, model number, or product name...",
 )
 
-# Clean domain names without subpaths (Google site: operator requires clean domains)
 RETAILERS = {
     "Harvey Norman": "harveynorman.ie",
     "DID Electrical": "did.ie",
@@ -32,10 +31,11 @@ RETAILERS = {
     "Expert Ireland": "expert.ie",
 }
 
-SERPAPI_KEY = "ae5b948cffb6691798333d5a96dd29bcc07a27140271a720b392f5aca8e9e2f8"
+SERPAPI_KEY = "PASTE_YOUR_SERPAPI_KEY_HERE"
 
 
-def parse_price(result):
+def parse_snippet_price(result):
+    """Extract price directly from Google search snippet data."""
     if "price" in result:
         return str(result["price"])
     if "extracted_price" in result:
@@ -59,6 +59,37 @@ def parse_price(result):
     return None
 
 
+def scrape_live_page_price(url):
+    """Fallback: Fetch the web page directly and extract the price tag."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/115.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=4)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Search common price CSS classes & elements
+            price_tags = soup.find_all(
+                ["span", "p", "div"],
+                class_=re.compile(r"price|amount|val|cost", re.I),
+            )
+            for tag in price_tags:
+                text = tag.get_text()
+                match = re.search(
+                    r"€\s?[\d,]+(?:\.\d{2})?", text, re.IGNORECASE
+                )
+                if match:
+                    return match.group(0).strip()
+    except Exception:
+        pass
+    return None
+
+
 if (
     st.button("🔍 Search Competitors", use_container_width=True, type="primary")
     and query
@@ -66,12 +97,11 @@ if (
     st.markdown("---")
     st.markdown(f"#### Results for: **'{query}'**")
 
-    with st.spinner("Searching live store prices..."):
+    with st.spinner("Fetching exact live prices..."):
         for name, domain in RETAILERS.items():
             with st.container(border=True):
                 col1, col2 = st.columns([2.5, 1.2])
 
-                # Query parameters properly encoded by requests
                 params = {
                     "q": f"site:{domain} {query}",
                     "engine": "google",
@@ -84,20 +114,8 @@ if (
                     res = requests.get(
                         "https://serpapi.com/search.json", params=params
                     ).json()
-
-                    # Check for API errors (e.g. limit reached)
-                    if "error" in res:
-                        with col1:
-                            st.markdown(f"### {name}")
-                            st.caption(f"API Notice: {res['error']}")
-                        with col2:
-                            st.metric(label="Live Price", value="Error")
-                            st.error("API Limit")
-                        continue
-
                     organic = res.get("organic_results", [])
 
-                    # Fallback search if direct site match returns empty
                     if not organic:
                         fallback_params = {
                             "q": f"{query} {name} Ireland",
@@ -116,7 +134,13 @@ if (
                         top_match = organic[0]
                         title = top_match.get("title", "Product Found")
                         link = top_match.get("link", "#")
-                        price = parse_price(top_match)
+
+                        # Try Google Snippet Price
+                        price = parse_snippet_price(top_match)
+
+                        # Fallback: Direct Web Scrape if missing
+                        if not price and link != "#":
+                            price = scrape_live_page_price(link)
 
                         with col1:
                             st.markdown(f"### {name}")
@@ -126,12 +150,12 @@ if (
                         with col2:
                             if price:
                                 st.metric(label="Live Price", value=price)
-                                st.success("In Stock / Found")
+                                st.success("Price Extracted")
                             else:
                                 st.metric(
-                                    label="Live Price", value="Check Link"
+                                    label="Live Price", value="Unlisted"
                                 )
-                                st.warning("Price in Link")
+                                st.warning("Check Site")
                     else:
                         with col1:
                             st.markdown(f"### {name}")
@@ -140,10 +164,10 @@ if (
                             st.metric(label="Live Price", value="-")
                             st.error("Unavailable")
 
-                except Exception as e:
+                except Exception:
                     with col1:
                         st.markdown(f"### {name}")
-                        st.caption("Unable to load retailer data.")
+                        st.caption("Error loading data.")
                     with col2:
                         st.metric(label="Live Price", value="Error")
                         st.error("Failed")
