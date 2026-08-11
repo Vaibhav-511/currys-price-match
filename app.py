@@ -30,7 +30,7 @@ RETAILERS = {
     "Expert Ireland": "expert.ie",
 }
 
-SERPAPI_KEY = "PASTE_YOUR_SERPAPI_KEY_HERE"
+SERPAPI_KEY = "ae5b948cffb6691798333d5a96dd29bcc07a27140271a720b392f5aca8e9e2f8"
 
 
 def clean_search_keywords(title):
