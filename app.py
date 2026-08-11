@@ -3,12 +3,10 @@ import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
-# Page Configuration
 st.set_page_config(
     page_title="Currys Price Match", page_icon="⚡", layout="centered"
 )
 
-# Header UI
 st.markdown(
     "⚡ Currys Price Match",
     unsafe_allow_html=True,
@@ -35,21 +33,53 @@ RETAILERS = {
 SERPAPI_KEY = "PASTE_YOUR_SERPAPI_KEY_HERE"
 
 
-def resolve_barcode_to_title(barcode, api_key):
-    """Converts a raw 12/13-digit EAN barcode into a full product title."""
-    url = f"https://serpapi.com/search.json?q={barcode}&engine=google&gl=ie&hl=en&api_key={api_key}"
+def clean_search_keywords(title):
+    """Clean extra fluff words and keep the top 4-5 core keywords."""
+    # Remove special characters
+    clean = re.sub(r"[^\w\s]", " ", title)
+    words = clean.split()
+
+    # Filter out common junk words
+    ignore_words = {
+        "buy",
+        "online",
+        "currys",
+        "ireland",
+        "ie",
+        "free",
+        "delivery",
+        "store",
+        "shop",
+        "official",
+    }
+    filtered = [w for w in words if w.lower() not in ignore_words]
+
+    # Return top 4 core words for standard searches, top 5 for longer ones
+    return " ".join(filtered[:5])
+
+
+def resolve_barcode(barcode, api_key):
+    """Converts a raw barcode to product name using open UPC database + fallback."""
+    # 1. Try free UPC database API first
     try:
-        res = requests.get(url, timeout=5).json()
-        organic = res.get("organic_results", [])
-        if organic:
-            raw_title = organic[0].get("title", "")
-            # Remove generic store tags like "| Currys" or "- Amazon"
-            clean_title = (
-                raw_title.split("|")[0].split("-")[0].split(":")[0].strip()
-            )
-            return clean_title
+        upc_url = f"https://api.upcitemdb.com/prod/trial/lookup?upc={barcode}"
+        res = requests.get(upc_url, timeout=3).json()
+        items = res.get("items", [])
+        if items:
+            return items[0].get("title", "")
     except Exception:
         pass
+
+    # 2. Fallback to Google via SerpAPI
+    try:
+        serp_url = f"https://serpapi.com/search.json?q={barcode}&engine=google&gl=ie&hl=en&api_key={api_key}"
+        res = requests.get(serp_url, timeout=4).json()
+        organic = res.get("organic_results", [])
+        if organic:
+            return organic[0].get("title", "")
+    except Exception:
+        pass
+
     return barcode
 
 
@@ -86,7 +116,7 @@ def scrape_live_page_price(url):
         )
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=4)
+        resp = requests.get(url, headers=headers, timeout=3)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             price_tags = soup.find_all(
@@ -110,29 +140,29 @@ if (
     and query
 ):
     clean_query = query.strip()
-    search_term = clean_query
+    search_keywords = clean_query
 
-    # Step 1: If input is a numeric barcode, convert it to product title
+    # Convert numeric barcode if entered
     if clean_query.isdigit():
-        with st.spinner("Converting barcode to product name..."):
-            resolved_name = resolve_barcode_to_title(
-                clean_query, SERPAPI_KEY
+        with st.spinner("Decoding barcode..."):
+            raw_title = resolve_barcode(clean_query, SERPAPI_KEY)
+            search_keywords = clean_search_keywords(raw_title)
+            st.info(
+                f"📦 Barcode Detected: **{raw_title}**\n\n🔍 Searching as: **{search_keywords}**"
             )
-            if resolved_name != clean_query:
-                st.info(f"📦 Barcode Identifed: **{resolved_name}**")
-                search_term = resolved_name
+    else:
+        search_keywords = clean_search_keywords(clean_query)
 
     st.markdown("---")
-    st.markdown(f"#### Results for: **'{search_term}'**")
 
-    # Step 2: Search competitor websites using the exact product name
-    with st.spinner("Searching competitor live prices..."):
+    with st.spinner("Scanning competitor prices..."):
         for name, domain in RETAILERS.items():
             with st.container(border=True):
                 col1, col2 = st.columns([2.5, 1.2])
 
+                # Query using clean 4-word keywords
                 params = {
-                    "q": f"site:{domain} {search_term}",
+                    "q": f"site:{domain} {search_keywords}",
                     "engine": "google",
                     "gl": "ie",
                     "hl": "en",
@@ -143,7 +173,33 @@ if (
                     res = requests.get(
                         "https://serpapi.com/search.json", params=params
                     ).json()
+
+                    # Check for API usage limit reached
+                    if "error" in res:
+                        with col1:
+                            st.markdown(f"### {name}")
+                            st.caption(f"API Note: {res['error']}")
+                        with col2:
+                            st.metric(label="Live Price", value="Limit")
+                            st.error("API Limit")
+                        continue
+
                     organic = res.get("organic_results", [])
+
+                    # Fallback to broader search if site: operator yielded no result
+                    if not organic:
+                        fallback_params = {
+                            "q": f"{search_keywords} {name} Ireland",
+                            "engine": "google",
+                            "gl": "ie",
+                            "hl": "en",
+                            "api_key": SERPAPI_KEY,
+                        }
+                        res = requests.get(
+                            "https://serpapi.com/search.json",
+                            params=fallback_params,
+                        ).json()
+                        organic = res.get("organic_results", [])
 
                     if organic:
                         top_match = organic[0]
@@ -180,7 +236,7 @@ if (
                 except Exception:
                     with col1:
                         st.markdown(f"### {name}")
-                        st.caption("Error fetching retailer data.")
+                        st.caption("Error loading data.")
                     with col2:
                         st.metric(label="Live Price", value="Error")
                         st.error("Failed")
