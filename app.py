@@ -3,23 +3,22 @@ import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
-# Page Configuration
 st.set_page_config(
     page_title="Currys Price Match", page_icon="⚡", layout="centered"
 )
 
 st.markdown(
-    "<h1 style='text-align: center; color: #4F46E5;'>⚡ Currys Price Match</h1>",
+    "⚡ Currys Price Match",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "<p style='text-align: center; color: #6B7280; font-size: 0.95rem; margin-bottom: 25px;'>Live Irish Competitor Price Scanner</p>",
+    "Exact Irish Competitor Price Scanner",
     unsafe_allow_html=True,
 )
 
 query = st.text_input(
     "Product Search",
-    placeholder="Type EAN code, model number, or product name...",
+    placeholder="Enter EAN code, exact model number, or product name...",
 )
 
 RETAILERS = {
@@ -31,11 +30,10 @@ RETAILERS = {
     "Expert Ireland": "expert.ie",
 }
 
-SERPAPI_KEY = "ae5b948cffb6691798333d5a96dd29bcc07a27140271a720b392f5aca8e9e2f8"
+SERPAPI_KEY = "PASTE_YOUR_SERPAPI_KEY_HERE"
 
 
 def parse_snippet_price(result):
-    """Extract price directly from Google search snippet data."""
     if "price" in result:
         return str(result["price"])
     if "extracted_price" in result:
@@ -60,7 +58,6 @@ def parse_snippet_price(result):
 
 
 def scrape_live_page_price(url):
-    """Fallback: Fetch the web page directly and extract the price tag."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -72,8 +69,6 @@ def scrape_live_page_price(url):
         resp = requests.get(url, headers=headers, timeout=4)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
-
-            # Search common price CSS classes & elements
             price_tags = soup.find_all(
                 ["span", "p", "div"],
                 class_=re.compile(r"price|amount|val|cost", re.I),
@@ -97,13 +92,22 @@ if (
     st.markdown("---")
     st.markdown(f"#### Results for: **'{query}'**")
 
-    with st.spinner("Fetching exact live prices..."):
+    # Clean raw input
+    clean_query = query.strip()
+    is_numeric = clean_query.isdigit()
+
+    with st.spinner("Finding exact matching product and prices..."):
         for name, domain in RETAILERS.items():
             with st.container(border=True):
                 col1, col2 = st.columns([2.5, 1.2])
 
+                # Use quote marks on EAN codes to force exact match search
+                search_term = (
+                    f'"{clean_query}"' if is_numeric else clean_query
+                )
+
                 params = {
-                    "q": f"site:{domain} {query}",
+                    "q": f"site:{domain} {search_term}",
                     "engine": "google",
                     "gl": "ie",
                     "hl": "en",
@@ -116,9 +120,10 @@ if (
                     ).json()
                     organic = res.get("organic_results", [])
 
-                    if not organic:
+                    # Fallback to broader search if quotes were too strict
+                    if not organic and is_numeric:
                         fallback_params = {
-                            "q": f"{query} {name} Ireland",
+                            "q": f"site:{domain} {clean_query}",
                             "engine": "google",
                             "gl": "ie",
                             "hl": "en",
@@ -135,10 +140,8 @@ if (
                         title = top_match.get("title", "Product Found")
                         link = top_match.get("link", "#")
 
-                        # Try Google Snippet Price
                         price = parse_snippet_price(top_match)
 
-                        # Fallback: Direct Web Scrape if missing
                         if not price and link != "#":
                             price = scrape_live_page_price(link)
 
@@ -150,16 +153,16 @@ if (
                         with col2:
                             if price:
                                 st.metric(label="Live Price", value=price)
-                                st.success("Price Extracted")
+                                st.success("In Stock / Found")
                             else:
                                 st.metric(
-                                    label="Live Price", value="Unlisted"
+                                    label="Live Price", value="Check Link"
                                 )
-                                st.warning("Check Site")
+                                st.warning("Price in Link")
                     else:
                         with col1:
                             st.markdown(f"### {name}")
-                            st.caption("No matching product found.")
+                            st.caption("No exact match found.")
                         with col2:
                             st.metric(label="Live Price", value="-")
                             st.error("Unavailable")
@@ -167,7 +170,7 @@ if (
                 except Exception:
                     with col1:
                         st.markdown(f"### {name}")
-                        st.caption("Error loading data.")
+                        st.caption("Error fetching retailer data.")
                     with col2:
                         st.metric(label="Live Price", value="Error")
                         st.error("Failed")
